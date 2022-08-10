@@ -34,10 +34,10 @@ for path in paths:
 
 # Functions
 def get_fq1(wildcards):
-            return [ my_files for my_files in glob.glob(f"data/00reads/{wildcards.sample}_R1*.fastq.gz")]
+            return [ my_files for my_files in glob.glob(f"data/00reads/{wildcards.sample}_*_R1*.fastq.gz")]
 
 def get_fq2(wildcards):
-            b = [ my_files for my_files in glob.glob(f"data/00reads/{wildcards.sample}_R1*.fastq.gz")]
+            b = [ my_files for my_files in glob.glob(f"data/00reads/{wildcards.sample}_*_R1*.fastq.gz")]
             c = list(map(lambda x: str.replace(x, "_R1", "_R2"), b))
             return c
 
@@ -58,7 +58,7 @@ rule all:
             o9 = expand("results/05bigwig/{s}.bw", s=samples),
             o10 = expand("results/05TEcount/{s}.TEcount.cntTable", s=samples)
 
-if (concatenate_replicates == true):
+if (concatenate_replicates == True):
     rule merge_rep:
         input: fq1 = get_fq1,
                fq2 = get_fq2
@@ -113,7 +113,7 @@ rule trimming:
             ref=data/00adapters/truseq.fa.gz \
             {params} stats={log.log2} 2> {log.log1}  
         """
-if (remove_abundant_rnas == true): 
+if (remove_abundant_rnas == True): 
     rule build_abundant_db:
         input: config["reference"]["abundant_rna_file"]
         output: "data/00ref/abundant"

@@ -1,3 +1,5 @@
 config/
 data/
 results/
+.snakemake/
+slurm*
