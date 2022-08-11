@@ -1,0 +1,249 @@
+---
+title: "Differential expression analysis of Cai's samples for TK_27"
+author: "Hernan Lorenzi"
+date: "8/11/2022"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+# Load libraries
+```{r load libraries}
+suppressMessages(library("org.Hs.eg.db"))
+suppressMessages(library("pheatmap"))
+suppressMessages(library("EnhancedVolcano"))
+suppressMessages(library("ggplot2"))
+suppressMessages(library("ggpubr"))
+suppressMessages(library("DESeq2"))
+suppressMessages(library("stringr"))
+suppressMessages(library("biomaRt"))
+suppressMessages(library("tidyverse"))
+suppressMessages(library("pcaExplorer"))
+suppressMessages(library("VennDiagram"))
+suppressMessages(library("clusterProfiler"))
+suppressMessages(library("GOSemSim"))
+suppressMessages(library("ggsci"))
+suppressMessages(library("viridis"))
+suppressMessages(library("ggrepel"))
+suppressMessages(library("RColorBrewer"))
+suppressMessages(library("msigdbr"))
+suppressMessages(library("cowplot"))
+suppressMessages(library("enrichplot"))
+suppressMessages(library("ReactomePA"))
+suppressMessages(library("ggupset"))
+suppressMessages(library("broom"))
+suppressMessages(library("ggraph"))
+```
+
+# Define functions
+```{r aux functions}
+
+# Load auxyliary functions
+source(file = "./01_aux_rnaseq_functions.R")
+
+# Load enrichment functions
+source(file = "./02_Gene_enrichment_functions.R")
+
+```
+
+
+# Load data
+```{r Loading data}
+all <- read.delim2("./data/read_counts.txt", sep = "\t", header = TRUE, row.names = 1, comment.char = c("#") )
+
+# Make sure read counts are numeric and rounded to 0 decimals
+all.tmp <- as.data.frame(lapply(all, function(x){ round(as.numeric(x), digits = 0)} ))
+rownames(all.tmp) <- rownames(all)
+all <- all.tmp
+
+# Replace NA counts with 0
+all[is.na(all)] <- 0
+
+# Keep table with Ensemble IDs and gene Symbols
+gene_symbols <- replace_gene_acc_by_symbol_ids(rownames(all))
+ensembl_to_symbol <- as.data.frame(cbind("Ensembl_ID" = rownames(all), "gene_name" = gene_symbols), row.names = 1)
+
+# Load metadata
+metadata <- read.delim2("./data/metadata.txt", sep = "\t", row.names = 1, header = T)
+
+# Sort tables so metadata and read counts match order
+metadata<-  metadata[match(colnames(all), rownames(metadata)), ]
+
+# Add total read counts and sample id columns to metadata
+metadata$Read_counts <- colSums(all)
+
+#Remove all zero rows
+all <- remove_all_zero_rows(all, min_total_count = 0)
+
+```
+
+# Normalize data to TPMs to run some comparative analysis across samples
+```{r}
+all.tpm <- normalize_by_TPM(all)
+write.table(x = all.tpm, file = "./data/read_counts_tpms.txt", col.names = NA, sep = "\t")
+```
+
+###########################################
+# Analysis of expression data using DESeq2
+###########################################
+
+```{r deseq2}
+# Convert metadata to factors
+for (variable in c("genotype", "sample_id")){
+  metadata[,variable] <- as.factor(metadata[,variable])  
+}
+
+```
+
+# Analysis of Dataset ONE
+
+```{r Dataset one}
+# Generate DESeq2 object for NS and ST condition ONLY. We could potentially add Read_counts as either a covariate or as a factor (by grouping Read counts into Low and High count bins). Ideally, this should be done adding Read_counts as a random effect using mixed models, that can only be applied in Limma package. Addind it as a fixed effect in the fdesign formula might lower the power of the analysis.  
+#dds.all <- DESeqDataSetFromMatrix(countData = all_one, 
+#                              colData = meta_one,  
+#                              design = ~ Genotype + Inducer + Genotype:Inducer)
+
+dir.create(path = "./Plots", showWarnings = FALSE)
+
+
+# Create DESeq object
+dds.all <- DESeqDataSetFromMatrix(countData = all, 
+                              colData = metadata,  
+                              design = ~ Read_counts + genotype)
+
+# Plot total reads per sample using barchar
+p <- ggbarplot(data = metadata, 
+          x = "sample_id", 
+          y = "Read_counts",
+          x.text.angle = 90,
+          fill = "genotype", 
+          title = "Total read counts", 
+          ylab = "Read counts",
+          sort.by.groups = TRUE,
+          palette = "jco",
+          sort.val = "asc") 
+ggsave("Plots/barplot_read_counts.pdf", plot = p)
+p
+
+
+# Normalize counts
+vsd.one <- vst(dds.all, blind=FALSE)
+rlog.one <- rlog(dds.all, blind=FALSE)
+
+# Keep genes with at least 10 reads total across samples
+keep <- rowSums(counts(dds.all)) >= 10
+dds.all <- dds.all[keep,]
+
+# Calculate distances between samples
+sampleDists <- dist(t(assay(vsd.one)))
+
+# Plot inter-sample distances
+old.par <- par(no.readonly=T)
+
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(rlog.one$sample_id)
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+p.pheatmap <- pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+
+ggsave2(filename = "unsupervised_clustering_rnaseq_profile_20plus_reads.pdf", plot = p.pheatmap, path = "./Plots")
+
+# PCA
+pcaData <- plotPCA(rlog.one, intgroup=c("genotype", "Read_counts"), returnData=TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+y.coords = c(min(pcaData$PC1, pcaData$PC2), max(pcaData$PC1, pcaData$PC2))
+x.coords = y.coords
+p1 <- ggplot(pcaData, aes(PC1, PC2, shape=genotype, color=Read_counts )) +
+  geom_point(size=3) + #scale_color_lancet() + 
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed(ratio = (max(pcaData$PC1)-min(pcaData$PC1))/(max(pcaData$PC2)-min(pcaData$PC2))) 
+
+ggsave("Plots/pca_dataset_1_Induc_gt.pdf", plot = p1)
+p1
+
+
+```
+Samples separate mainly by sequencing depth (Low <= 5x10e5 reads). Hence, it is important to control by sequencing depth during DE analysis.
+
+### resultsNames(dds)
+
+# Filtering out poorly-expressed genes (less than 10 reads across all samples) 
+```{r filtering genes based on total counts of reads}
+
+# Keep genes with at least 10 reads total across samples
+keep <- rowSums(counts(dds.all)) >= 10
+dds.all <- dds.all[keep,]
+
+#dds.rnaseA <- dds.all[ , dds.all$Exp_Group == "RNaseA_exp"]
+#dds.rnaseA$Genotype <- droplevels( dds.rnaseA$Genotype)
+#dds.rnaseA$Treatment <- droplevels(dds.rnaseA$Treatment)
+#dds.rnaseA$Read_depth <- droplevels( dds.rnaseA$Read_depth)
+
+#dds.rnaseH <- dds.all[ , dds.all$Exp_Group == "RNaseH_exp"]
+#dds.rnaseH$Genotype <- droplevels(dds.rnaseH$Genotype)
+#dds.rnaseH$Treatment <- droplevels(dds.rnaseH$Treatment)
+#dds.rnaseH$Read_depth <- droplevels(dds.rnaseH$Read_depth)
+
+```
+
+
+
+# Using groups instead of interactions
+
+```{r}
+
+# Define function for processing and saving result tables
+sort_and_write_res_table <- function(result_table, file_name){
+  dir.create(path = "./DE", showWarnings = FALSE)
+  # Sort genes by (padj)
+  result_table_sorted <- result_table[order(result_table$padj, decreasing = FALSE),]
+  # Add gene symbols
+  gene_list <- rownames(result_table_sorted)
+  symbol_list <- ensembl_to_symbol$gene_name[match(gene_list, ensembl_to_symbol$Ensembl_ID)]
+  df <-as.data.frame(cbind(result_table_sorted, Gene_name = symbol_list))
+  
+  # Write sorted table to file
+  write.table(df, file = paste0("./DE/",file_name,".txt"), 
+            sep = "\t", col.names=NA)
+  return(result_table_sorted)
+}
+
+
+
+# Calculate DE for WT samples
+design(dds.all) <- ~genotype 
+dds.all$genotype <- relevel(dds.all$genotype, "WT")
+dds.all <- DESeq(dds.all)
+resultsNames(dds.all)
+
+
+# Using lfcShrink instead of results to reduce high Log2FC bias of genes with low expression
+#res_genotype_IGF2BP3KO_vs_WT <- lfcShrink(dds.all, coef = "genotype_IGF2BP3KO_vs_WT", type = "ashr", )
+#res_genotype_YTHDF2KO_vs_WT <- lfcShrink(dds.all, coef = "genotype_YTHDF2KO_vs_WT", type = "ashr", )
+
+res_genotype_IGF2BP3KO_vs_WT <- results(dds.all, name = "genotype_IGF2BP3KO_vs_WT")
+res_genotype_YTHDF2KO_vs_WT <- results(dds.all, name = "genotype_YTHDF2KO_vs_WT")
+
+summary(res_genotype_IGF2BP3KO_vs_WT, alpha = 0.05)
+summary(res_genotype_YTHDF2KO_vs_WT, alpha = 0.05)
+
+
+# Sort results by Log2FC
+res_genotype_IGF2BP3KO_vs_WT_sorted <- sort_and_write_res_table(res_genotype_IGF2BP3KO_vs_WT, "DE_IGF2BP3KO_vs_WT")
+res_genotype_YTHDF2KO_vs_WT_sorted <- sort_and_write_res_table(res_genotype_YTHDF2KO_vs_WT, "DE_YTHDF2KO_vs_WT")
+
+# Save sorted files as a list
+DE_results = list()
+DE_results[["IGF2BP3KO_vs_WT"]]  <- res_genotype_IGF2BP3KO_vs_WT_sorted
+DE_results[["YTHDF2KO_vs_WT"]] <- res_genotype_YTHDF2KO_vs_WT_sorted
+
+```
+
+
+```{r}
+sessionInfo()
+```
